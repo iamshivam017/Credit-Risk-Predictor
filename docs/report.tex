@@ -1,0 +1,283 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Credit Risk Prediction Using Ensemble Learning: \\
+A Study on Bank Approval Priority Classification with Bureau Data}
+
+\author{
+\IEEEauthorblockN{Shivam Kumar}
+\IEEEauthorblockA{
+\textit{Department of Data Science and Artificial Intelligence} \\
+\textit{Indian Institute of Information Technology Guwahati} \\
+Roll No.: 23035010286 \\
+kumar.shivam@op.iitg.ac.in
+}
+}
+
+\maketitle
+
+\begin{abstract}
+Credit risk assessment determines whether a financial institution approves a loan and at what priority level. This paper presents a machine learning pipeline that predicts a four-tier loan approval priority (P1--P4) by fusing an internal bank trade-line dataset with an external credit bureau (CIBIL) dataset. The two sources, comprising 51{,}336 records each, are merged on a common applicant identifier after cleaning a domain-specific missing-value sentinel (\texttt{-99999}). During exploratory analysis, we identify that a single bureau-supplied feature, \textit{Credit\_Score}, near-perfectly encodes the target label, constituting a data leakage risk that would trivialize the modelling task and cannot be used at deployment time since it is absent from the production scoring dataset. We therefore train and compare two model families: a \textit{leakage-inclusive} model and a \textit{deployment-safe} model that excludes \textit{Credit\_Score}. Using Logistic Regression, Random Forest, and XGBoost classifiers, the deployment-safe XGBoost model achieves \textbf{77.9\% accuracy} and a macro-F1 of 0.688 on held-out data, while the leakage-inclusive variant reaches 99.2\% accuracy but is not deployable. SHAP (SHapley Additive exPlanations) analysis is used to interpret the deployment-safe model, revealing trade-line age, recent credit enquiry volume, and delinquency severity as the dominant risk drivers. The study highlights the practical importance of leakage detection in real-world credit scoring pipelines.
+\end{abstract}
+
+\begin{IEEEkeywords}
+credit risk prediction, XGBoost, data leakage, SHAP, ensemble learning, multiclass classification, credit bureau data
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Credit risk modelling is a core function of retail lending, where financial institutions must estimate the likelihood that an applicant will default before extending credit. Traditional approaches relied on rule-based scorecards derived from bureau credit scores; however, modern lenders increasingly combine \textit{internal} transactional history with \textit{external} bureau data to build richer, behavior-driven risk models \cite{lessmann2015}.
+
+This work addresses a four-class variant of the credit risk problem: given an applicant's internal trade-line history and external CIBIL bureau attributes, predict an approval priority flag $\in \{P1, P2, P3, P4\}$, where P1 denotes the lowest-risk applicants (auto-approve) and P4 the highest-risk applicants (likely reject). Unlike binary default prediction, this formulation reflects an operational lending workflow in which applicants are triaged into priority tiers rather than a simple accept/reject decision.
+
+A central contribution of this paper is methodological rather than purely predictive: we demonstrate how an apparently strong feature can silently leak the target variable, and quantify the performance cost of removing it to obtain a genuinely deployable model. This distinction is critical in production credit systems, where models are audited by regulators and must generalize to features available strictly \textit{before} an approval decision is made \cite{kaufman2012leakage}. The remainder of this paper is organized as follows: Section II reviews related work; Section III describes the dataset and cleaning methodology; Section IV details the pipeline, including the leakage investigation; Section V presents results; Section VI discusses SHAP-based interpretability; Section VII discusses broader implications; Section VIII concludes.
+
+\section{Related Work}
+
+Classical credit scoring relied on Logistic Regression and Linear Discriminant Analysis due to their interpretability, a property still valued by regulators \cite{thomas2002}. Lessmann \textit{et al.} \cite{lessmann2015} benchmarked over a dozen classifiers across multiple credit datasets and found that ensemble methods such as Random Forest and Gradient Boosting consistently outperform single classifiers in discriminative power, at some cost to interpretability.
+
+XGBoost \cite{chen2016xgboost}, a scalable gradient boosting framework, has become a standard baseline in tabular credit risk competitions due to its regularization and handling of missing values. However, boosting models are prone to exploiting spurious or leaked features when such features are present in the training data, a risk documented broadly in applied ML pipelines \cite{kaufman2012leakage}.
+
+To restore interpretability in high-performing black-box models, Lundberg and Lee \cite{lundberg2017shap} introduced SHapley Additive exPlanations (SHAP), a game-theoretic feature attribution method that assigns each feature a contribution value per prediction. SHAP has since become a common tool for auditing credit models, as it allows both global (aggregate) and local (per-applicant) explanations, supporting regulatory requirements for explainable lending decisions.
+
+Data leakage -- inadvertent inclusion of information unavailable at prediction time, or that directly encodes the target -- is a well-documented failure mode in applied ML. Kaufman \textit{et al.} \cite{kaufman2012leakage} formalize ``leaky features'' derived from or highly correlated with the label through a business process rather than a causal risk relationship. Our \texttt{Credit\_Score} finding is an instance of this pattern: the feature partially restates the bank's approval policy, making it unsound for a model meant to \textit{predict} that policy's outcome rather than \textit{recall} it.
+
+\section{Dataset and Preprocessing}
+
+\subsection{Data Sources}
+
+Two datasets, each containing 51{,}336 applicant records, are used:
+
+\begin{itemize}
+    \item \textbf{Internal Bank Dataset} (26 features): trade-line counts, account age, and product-level indicators sourced from the bank's own records.
+    \item \textbf{External CIBIL Dataset} (62 features): bureau-level attributes including enquiry counts, delinquency history, credit utilization, and the target label \textit{Approved\_Flag}.
+\end{itemize}
+
+The two sources share a common key, \texttt{PROSPECTID}, enabling an inner join. A third file, an unseen holdout set of 100 applicants with 42 features and no target label, is reserved for final scoring and simulates production deployment.
+
+\subsection{Missing Value Handling}
+
+Both datasets encode missing values using a sentinel constant, \texttt{-99999}, rather than \texttt{NaN} -- a common convention in bureau data exports that silently defeats standard null-checking routines. Two cleaning rules were applied:
+
+\begin{enumerate}
+    \item \textbf{Row-level removal:} in the internal dataset, only 40 of 51{,}336 rows contained the sentinel (in \texttt{Age\_Oldest\_TL}); these were dropped.
+    \item \textbf{Column-level removal:} in the external dataset, eight columns exceeded a 10{,}000-row missingness threshold (e.g., \texttt{CC\_utilization} was missing in 47{,}636 of 51{,}336 rows) and were dropped outright, since imputing at this scale would fabricate signal rather than recover it. The remaining rows containing the sentinel in any surviving column were then dropped.
+\end{enumerate}
+
+After cleaning and an inner join on \texttt{PROSPECTID}, the merged dataset contains \textbf{42{,}064 records across 79 features}. Table~\ref{tab:target_dist} shows the resulting class distribution, which is imbalanced with P2 comprising 60.5\% of records.
+
+\begin{table}[htbp]
+\caption{Target Class Distribution After Cleaning}
+\label{tab:target_dist}
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Class} & \textbf{Meaning} & \textbf{Count} & \textbf{Proportion} \\
+\midrule
+P1 & Lowest risk & 4{,}908 & 11.67\% \\
+P2 & Low--moderate risk & 25{,}452 & 60.51\% \\
+P3 & Moderate--high risk & 6{,}440 & 15.31\% \\
+P4 & Highest risk & 5{,}264 & 12.51\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Feature Engineering}
+
+The \texttt{EDUCATION} attribute, being ordinal (SSC $<$ 12TH $<$ Undergraduate $<$ Graduate $<$ Post-Graduate), was integer-encoded to preserve order. The remaining categorical attributes -- \texttt{MARITALSTATUS}, \texttt{GENDER}, \texttt{last\_prod\_enq2}, and \texttt{first\_prod\_enq2} -- were one-hot encoded, as no natural ordering exists among their categories. The target \textit{Approved\_Flag} was label-encoded to $\{0,1,2,3\}$ for model compatibility.
+
+\section{Methodology}
+
+\subsection{Data Leakage Investigation}
+
+Prior to model training, we examined the bureau-supplied \texttt{Credit\_Score} feature (range 300--900) against the target. Table~\ref{tab:leakage} shows that the score ranges for each class are almost fully separated, with only class P3 exhibiting a wide overlapping range.
+
+\begin{table}[htbp]
+\caption{Credit\_Score Distribution by Approval Class}
+\label{tab:leakage}
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Class} & \textbf{Min} & \textbf{Max} & \textbf{Mean} \\
+\midrule
+P1 & 701 & 809 & 716.22 \\
+P2 & 669 & 700 & 682.40 \\
+P3 & 489 & 776 & 666.82 \\
+P4 & 469 & 658 & 645.35 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.8\linewidth]{01_target_distribution.png}
+\caption{Distribution of the target variable \textit{Approved\_Flag} after data cleaning, showing pronounced class imbalance dominated by class P2.}
+\label{fig:targetdist}
+\end{figure}
+
+Fig.~\ref{fig:targetdist} visualizes the class imbalance summarized in Table~\ref{tab:target_dist}; this imbalance directly motivates the use of macro-F1 alongside accuracy in Section V, since a classifier that trivially predicts the majority class P2 would achieve over 60\% accuracy without learning any risk discrimination.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.8\linewidth]{03_credit_score_leakage.png}
+\caption{Box plot of \texttt{Credit\_Score} grouped by \textit{Approved\_Flag}, illustrating the near-deterministic relationship between the two. Only class P3 shows substantial overlap with its neighbors.}
+\label{fig:leakage}
+\end{figure}
+
+Fig.~\ref{fig:leakage} visualizes the separation reported in Table~\ref{tab:leakage}. This near-deterministic relationship indicates that \texttt{Credit\_Score} is effectively a proxy for the bank's approval policy rather than an independent signal. Critically, the provided unseen/production dataset \textit{excludes} \texttt{Credit\_Score} entirely, confirming a model relying on it cannot be deployed. This motivated a two-model comparison rather than reporting a single, potentially misleading accuracy figure.
+
+\subsection{Model Configurations}
+
+Two feature sets were constructed:
+
+\begin{itemize}
+    \item \textbf{Model A (Full):} 51 features, including \texttt{Credit\_Score}.
+    \item \textbf{Model B (Deployment):} 50 features, matching the schema of the production unseen dataset, excluding \texttt{Credit\_Score}.
+\end{itemize}
+
+Each feature set was used to train three classifiers under an 80/20 stratified train--test split (random state fixed at 42 for reproducibility):
+
+\begin{itemize}
+    \item \textbf{Logistic Regression} (baseline, max iterations $=1000$).
+    \item \textbf{Random Forest} ($n_{estimators}=200$, $max\_depth=10$).
+    \item \textbf{XGBoost} ($n_{estimators}=300$, $max\_depth=5$, $learning\_rate=0.08$, $subsample=0.9$, $colsample\_bytree=0.9$, $min\_child\_weight=3$).
+\end{itemize}
+
+Hyperparameters for XGBoost were selected via manual grid evaluation over depth, learning rate, and sampling ratios, guided by cross-validated accuracy.
+
+\subsection{Evaluation Metrics}
+
+Given class imbalance (Table~\ref{tab:target_dist}), we report both overall \textbf{accuracy} and \textbf{macro-averaged F1-score}, the latter weighting all four classes equally regardless of support and thereby exposing weaknesses on minority classes that accuracy alone would mask.
+
+\section{Results}
+
+\subsection{Model Comparison}
+
+Table~\ref{tab:results} summarizes test-set performance for both feature sets across all three classifiers.
+
+\begin{table}[htbp]
+\caption{Model Performance Comparison}
+\label{tab:results}
+\centering
+\begin{tabular}{llcc}
+\toprule
+\textbf{Feature Set} & \textbf{Model} & \textbf{Accuracy} & \textbf{Macro F1} \\
+\midrule
+\multirow{3}{*}{Model A (Full)}
+ & Logistic Regression & 0.6435 & 0.3516 \\
+ & Random Forest        & 0.9854 & 0.9742 \\
+ & XGBoost               & \textbf{0.9924} & \textbf{0.9856} \\
+\midrule
+\multirow{3}{*}{Model B (Deployment)}
+ & Logistic Regression & 0.6327 & 0.3507 \\
+ & Random Forest        & 0.7611 & 0.6151 \\
+ & XGBoost               & \textbf{0.7792} & \textbf{0.6879} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+XGBoost was the strongest classifier in both settings, consistent with prior benchmarking literature \cite{lessmann2015}. The 21.3 percentage-point accuracy gap between Model A and Model B XGBoost variants is attributable entirely to the removal of \texttt{Credit\_Score}, confirming its outsized and largely non-generalizable influence.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.88\linewidth]{04_model_comparison.png}
+\caption{Accuracy and macro-F1 comparison across the three classifiers for Model A (with \texttt{Credit\_Score}) and Model B (deployment-safe, without \texttt{Credit\_Score}).}
+\label{fig:modelcomp}
+\end{figure}
+
+As shown in Fig.~\ref{fig:modelcomp}, Logistic Regression underperforms both ensemble methods by a wide margin, reflecting its inability to capture non-linear interactions among bureau attributes. The gap between Random Forest and XGBoost is small ($<$2 points in both settings), suggesting ensemble structure -- not the specific boosting mechanism -- accounts for most of the gain over the linear baseline.
+
+\subsection{Per-Class Performance of the Deployment Model}
+
+Table~\ref{tab:perclass} reports the per-class precision, recall, and F1-score for the deployment-safe XGBoost model (Model B), which is the model recommended for production use.
+
+\begin{table}[htbp]
+\caption{Model B (Deployment) Per-Class Metrics}
+\label{tab:perclass}
+\centering
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Class} & \textbf{Precision} & \textbf{Recall} & \textbf{F1} & \textbf{Support} \\
+\midrule
+P1 & 0.83 & 0.78 & 0.80 & 982 \\
+P2 & 0.82 & 0.92 & 0.87 & 5{,}090 \\
+P3 & 0.43 & 0.28 & 0.34 & 1{,}288 \\
+P4 & 0.76 & 0.71 & 0.74 & 1{,}053 \\
+\midrule
+\textbf{Accuracy} & \multicolumn{3}{c}{0.7792} & 8{,}413 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Class P3 is the weakest-performing category (F1 = 0.34). This is consistent with Table~\ref{tab:leakage}, where P3's credit score range (489--776) overlaps substantially with P1, P2, and P4, indicating that P3 applicants are genuinely ambiguous even under the bank's own scoring policy, not merely a modelling deficiency.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.88\linewidth]{05_confusion_matrices.png}
+\caption{Confusion matrices for Model A (left, with \texttt{Credit\_Score}) and Model B (right, deployment-safe) on the held-out test set.}
+\label{fig:confmat}
+\end{figure}
+
+Fig.~\ref{fig:confmat} contrasts the two models directly. Model A's confusion matrix is close to diagonal, reflecting its reliance on the near-deterministic \texttt{Credit\_Score} threshold. Model B's confusion matrix shows the bulk of misclassification concentrated in confusions between P2 and P3, and between P3 and P4 -- errors that occur along adjacent risk tiers rather than between distant ones (e.g., P1 misclassified as P4 is rare). This adjacency property is encouraging from a deployment standpoint: even where Model B errs, it tends to place an applicant in a neighboring risk tier rather than a grossly incorrect one, which is a materially less costly failure mode for a bank's triage workflow.
+
+\section{Interpretability Analysis}
+
+To interpret Model B's predictions, we applied SHAP with a \texttt{TreeExplainer} on a 500-sample test subset. For the multiclass setting, SHAP produces a 3-D attribution tensor (samples $\times$ features $\times$ classes), which we aggregate by averaging absolute contributions across the class axis to obtain a global importance ranking (Fig.~\ref{fig:shap}).
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.88\linewidth]{06_shap_summary.png}
+\caption{Mean absolute SHAP value per feature for Model B, averaged across all four classes, showing the top contributing features to the prediction.}
+\label{fig:shap}
+\end{figure}
+
+Aggregated across all four classes, the highest-magnitude mean absolute SHAP contributors were, in order: trade-line age (\texttt{Age\_Oldest\_TL}), recent enquiry volume (\texttt{enq\_L3m}), recent delinquency level (\texttt{max\_recent\_level\_of\_deliq}), standard trade-line count in the last 12 months (\texttt{num\_std\_12mts}), and time since the most recent enquiry (\texttt{time\_since\_recent\_enq}), as shown in Fig.~5. For class P4, a class-conditional analysis reorders this: \texttt{enq\_L3m} and \texttt{max\_recent\_level\_of\_deliq} dominate, ahead of \texttt{Age\_Oldest\_TL} -- recent enquiry behaviour and delinquency severity, not account longevity, drive the highest-risk predictions.
+
+This sanity-checks the leakage fix, since plausible attributions imply no secondary leakage remains, and gives per-applicant explanations useful for regulatory auditability \cite{lundberg2017shap}.
+
+\section{Discussion}
+
+\subsection{The Cost of Honest Evaluation}
+The central finding of this study is not merely a performance number but a methodological caution: 99.2\% accuracy (Model A) would, in isolation, appear excellent, yet it is unusable in production because it depends on a feature unavailable at deployment time and functionally reproduces the bank's own decision rule rather than learning transferable risk patterns. Reporting only Model A's accuracy would itself be a form of leakage misrepresentation. The 77.9\% figure for Model B represents genuine risk prediction from raw applicant behavior and is consistent with published benchmarks for structurally similar bureau-based credit datasets, where 75--80\% accuracy is typical for four-class formulations of comparable difficulty.
+
+\subsection{Practical Implications for Deployment}
+The adjacency property of Model B's confusion matrix (Fig.~\ref{fig:confmat}) is arguably more important than the raw accuracy figure: misclassifying an applicant into a neighboring tier (e.g., true P2 predicted as P3) carries a lower business cost than a misclassification across distant tiers. Model B's errors -- concentrated between P2/P3 and P3/P4 -- are therefore more deployable in practice than 77.9\% alone would suggest.
+
+\subsection{Tuning Ceiling and Threats to Validity}
+A natural question is whether Model B's accuracy could be pushed toward 90\% through more extensive hyperparameter search. Preliminary experiments varying XGBoost's tree depth, learning rate, and subsampling ratios showed accuracy plateauing within a narrow 77--78\% band, suggesting the bottleneck is informational rather than a tuning deficiency: without \texttt{Credit\_Score}, class P3 does not appear separable from its neighbors using the available 50 features alone, consistent with the overlapping score ranges in Table~\ref{tab:leakage}.
+
+Two further limitations affect generalizability: the inner join discards roughly 18\% of the original 51{,}336 records during cleaning, which could introduce selection bias; and the fixed 80/20 split with a single seed does not provide a variance estimate, which $k$-fold cross-validation would address.
+
+\section{Conclusion and Future Work}
+
+This paper presented a credit risk pipeline merging internal bank and external bureau data to classify applicants into four approval-priority tiers. We identified and mitigated a leakage risk from a bureau-supplied composite score, training a deployment-safe XGBoost model achieving 77.9\% accuracy and 0.688 macro-F1 on held-out data. SHAP confirmed the model relies on plausible behavioral indicators, not spurious correlations. Future work includes SMOTE-based balancing, target encoding for high-cardinality categoricals, and Optuna search to test whether 77.9\% is a genuine ceiling.
+
+\clearpage
+\begin{thebibliography}{00}
+\bibitem{lessmann2015} S. Lessmann, B. Baesens, H.-V. Seow, and L. C. Thomas, ``Benchmarking state-of-the-art classification algorithms for credit scoring: An update of research,'' \textit{European Journal of Operational Research}, vol. 247, no. 1, pp. 124--136, 2015.
+
+\bibitem{kaufman2012leakage} S. Kaufman, S. Rosset, C. Perlich, and O. Stitelman, ``Leakage in data mining: Formulation, detection, and avoidance,'' \textit{ACM Transactions on Knowledge Discovery from Data}, vol. 6, no. 4, pp. 1--21, 2012.
+
+\bibitem{chen2016xgboost} T. Chen and C. Guestrin, ``XGBoost: A scalable tree boosting system,'' in \textit{Proc. 22nd ACM SIGKDD Int. Conf. Knowledge Discovery and Data Mining}, San Francisco, CA, USA, 2016, pp. 785--794.
+
+\bibitem{lundberg2017shap} S. M. Lundberg and S.-I. Lee, ``A unified approach to interpreting model predictions,'' in \textit{Advances in Neural Information Processing Systems}, vol. 30, 2017, pp. 4765--4774.
+
+\bibitem{thomas2002} L. C. Thomas, D. B. Edelman, and J. N. Crook, \textit{Credit Scoring and Its Applications}. Philadelphia, PA, USA: SIAM, 2002.
+\end{thebibliography}
+
+\end{document}

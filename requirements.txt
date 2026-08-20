@@ -1,0 +1,22 @@
+pandas==3.0.5
+numpy==2.5.2
+scikit-learn==1.9.0
+xgboost==3.4.1
+shap==0.52.0
+matplotlib==3.11.1
+seaborn==0.13.2
+joblib==1.5.3
+openpyxl==3.1.5
+streamlit==1.62.0
+pytest==9.1.1
+
+# ── A note on pinning ──────────────────────────────────────────────────────
+# These are exact versions this project was tested against end-to-end:
+# training ran cleanly, all 33 tests passed, and the dashboard booted and
+# every page rendered — all from a fresh virtual environment. Pinned
+# deliberately: the shipped models/*.pkl are pickled scikit-learn/XGBoost
+# objects, and loading them with a different library version than they
+# were trained with can print warnings or, on a bigger version jump, fail
+# outright. If you need newer versions for another reason, the simplest
+# fix is to re-run `python train.py` afterward to regenerate the models
+# against whatever versions you actually have installed.
