@@ -102,7 +102,7 @@ CreditRiskPredictor/
 ├── models/                      ← Auto-generated: trained .pkl files + metadata.json
 ├── plots/                       ← Auto-generated: report-ready PNG charts
 ├── tests/                       ← pytest suite (33 tests)
-└── docs/                        ← IEEE report, viva prep guides, notebook
+└── docs/                        ← IEEE report,notebook, architecture
     └── notebook.ipynb           ← Original analysis notebook (report source)
 ```
 
@@ -190,7 +190,7 @@ python train.py --no-cache       # force re-reading raw Excel files
 
 `docs/notebook.ipynb` is the original exploratory analysis and report
 source — full narrative, EDA, and the step-by-step leakage discovery in one
-place. It's kept for viva/report purposes; the dashboard (`app.py`) is the
+place.the dashboard (`app.py`) is the
 interactive way to actually use the trained model.
 
 ---
